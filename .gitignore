@@ -11,3 +11,9 @@ logs/
 .ruff_cache/
 dev/
 docs/figures/make_figures.py
+
+# Data and large artifacts
+data/
+*.zarr/
+*.parquet
+*.png
