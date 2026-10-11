@@ -1,4 +1,4 @@
-"""Sequential Multi-Sensor Fusion Model (GRU + S1/S2)."""
+"""Sequential Multi-Sensor Spatial-Temporal Fusion Model (GRU + S1/S2)."""
 
 import torch
 from torch import nn
@@ -62,14 +62,26 @@ class SequentialFusionModel(nn.Module):
         return torch.clamp(probs, 0.0, 1.0)
 
     def encode_series(self, s2_series: dict, s1_series: dict | None) -> torch.Tensor:
-        h2, w2 = s2_series["values"].shape[-2:]
-        s2_pixels = s2_series["values"][:, :, :, h2 // 2, w2 // 2]
+        s2_vals = s2_series["values"]
+        
+        # If zarr patch reader is used with image_size > 1, pool spatially. Otherwise index center pixel.
+        if s2_vals.dim() == 5 and s2_vals.shape[-1] > 1:
+            s2_pixels = s2_vals.mean(dim=(-2, -1))
+        else:
+            h2, w2 = s2_vals.shape[-2:]
+            s2_pixels = s2_vals[:, :, :, h2 // 2, w2 // 2]
+            
         s2_frames = torch.cat((s2_pixels, spectral_indices(s2_pixels)), dim=-1)
         s2_emb = self.s2_frame_mlp(s2_frames)
         
         if s1_series is not None:
-            h1, w1 = s1_series["values"].shape[-2:]
-            s1_pixels = s1_series["values"][:, :, :, h1 // 2, w1 // 2]
+            s1_vals = s1_series["values"]
+            if s1_vals.dim() == 5 and s1_vals.shape[-1] > 1:
+                s1_pixels = s1_vals.mean(dim=(-2, -1))
+            else:
+                h1, w1 = s1_vals.shape[-2:]
+                s1_pixels = s1_vals[:, :, :, h1 // 2, w1 // 2]
+                
             s1_emb = self.s1_frame_mlp(s1_pixels)
             min_t = min(s2_emb.shape[1], s1_emb.shape[1])
             frames = torch.cat((s2_emb[:, :min_t], s1_emb[:, :min_t]), dim=-1)

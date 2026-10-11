@@ -2,7 +2,7 @@ defaults:
   - _self_
 
 output_root: runs
-run_name: sequential_fusion_full
+run_name: sequential_fusion_spatial_patch_optimized
 seed: 42
 
 trainer:
@@ -28,13 +28,14 @@ data:
   label_mapping: configs/label_mapping.yaml
   sensors: ["s1", "s2"]
   target_sensors: ["s2"]
-  image_size: 1
+  reader: zarr
+  image_size: 3
   days_before: 30
   years_context: 1
   days_context: 15
   sampling_alpha: 0.5
   batch_size: 32
-  num_workers: 4
+  num_workers: 32
 
 model:
   name: sequential_fusion
