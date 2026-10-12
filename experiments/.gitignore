@@ -1,0 +1,4 @@
+**/__pycache__/
+**/*.py[cod]
+**/*.bak
+tristan_full_patch_loader/results/

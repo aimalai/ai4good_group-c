@@ -1,0 +1,88 @@
+# Group C / Tristan experiment 01: Temporal GRU.
+#
+# Hypothesis:
+#   The provided StatisticalMLP discards temporal order when it summarizes each
+#   window by mean/std. A small GRU may improve early operational F1 by preserving
+#   the order of Sentinel-2 observations while changing as little else as possible.
+#
+# IMPORTANT: this is a separate experiment config. Do not edit the professor's
+# configs/statistical_mlp.yaml.
+#
+# Quick smoke run on sushko:
+#   python experiments/tristan_temporal_gru/train.py \
+#     trainer.max_epochs=1 trainer.limit_train_batches=200 logger.kind=csv \
+#     run_name=tristan_gru_smoke
+#
+# Full exploratory fold-0 run:
+#   python experiments/tristan_temporal_gru/train.py logger.kind=csv
+
+seed: 0
+run_name: tristan_temporal_gru
+output_root: runs
+
+data:
+  root: ${DISFOR_DATA_ROOT}
+  label_mapping: configs/label_mapping.yaml
+  fold: 0
+  sensors: [s2]
+  target_sensors: [s2]
+  reader: pixel_cache
+  image_size: 1
+  days_before: 30
+  years_context: 1
+  days_context: 15
+  batch_size: 16
+  num_workers: 8
+  sampling_alpha: 0.5
+  normalization:
+    s2:
+      mean: [1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000]
+      std: [10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000, 10000]
+    s1:
+      mean: [0, 0]
+      std: [100, 100]
+
+model:
+  name: temporal_gru
+  frame_dim: 32
+  frame_hidden_dims: []
+  hidden_dim: 64
+  gru_layers: 1
+  trunk_dim: 128
+  trunk_hidden_dims: [128]
+  dropout: 0.0
+
+loss:
+  forget_days: 215
+  transition_days: 30
+
+optimizer:
+  lr: 0.001
+  weight_decay: 0.01
+
+trainer:
+  accelerator: auto
+  devices: 1
+  precision: bf16-mixed
+  max_epochs: 10
+  limit_train_batches: 1.0
+  early_stopping_patience: null
+  early_stopping_monitor: non_operational/PR_AUC_60d
+
+logger:
+  kind: wandb
+  project: ai4good-forest-disturbance
+  entity: null
+  offline: false
+
+evaluation:
+  horizons_days: [14, 30, 60, 365]
+  threshold: 0.5
+  operational:
+    alpha: {Clear Cut: 0.05, Thinning: 0.05, Salvage: 0.77, Wildfire: 0.86, Wind: 0.2, Biotic: 0.65}
+    threshold: {Clear Cut: 8.0, Thinning: 12.0, Salvage: 1.0, Wildfire: 2.0, Wind: 6.0, Biotic: 5.0}
+    rest_period_days: 365
+    binary_alpha: 0.38
+    binary_threshold: 9.0
+    t_before_days: 14
+    start_offset_years: 1
