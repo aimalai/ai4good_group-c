@@ -17,3 +17,6 @@ data/
 *.zarr/
 *.parquet
 *.png
+
+# Local experiment logs
+experiments/tristan_baseline_10ep/*.log
