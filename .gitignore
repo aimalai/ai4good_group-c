@@ -20,3 +20,6 @@ data/
 
 # Local experiment logs
 experiments/tristan_baseline_10ep/*.log
+
+# Dual L-TAE local training log
+experiments/tristan_ltae_late_fusion/*.log
