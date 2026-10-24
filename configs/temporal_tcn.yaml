@@ -1,0 +1,63 @@
+defaults:
+  - _self_
+
+output_root: runs
+run_name: temporal_tcn_pixel_cache
+seed: 42
+
+trainer:
+  max_epochs: 10
+  accelerator: auto
+  devices: 1
+  precision: 32-true
+  limit_train_batches: 1.0
+  gradient_clip_val: 1.0
+  early_stopping_patience: 10
+  early_stopping_monitor: val/loss
+  checkpoint_monitor: val/loss
+
+logger:
+  kind: wandb
+  entity: null
+  project: forest-disturbance-exploration
+  offline: false
+
+data:
+  root: /zfs/ai4good/datasets/forest_disturbance
+  fold: 0
+  label_mapping: configs/label_mapping.yaml
+  sensors: ["s1", "s2"]
+  target_sensors: ["s2"]
+  reader: pixel_cache
+  image_size: 1
+  days_before: 30
+  years_context: 1
+  days_context: 15
+  sampling_alpha: 0.5
+  batch_size: 32
+  num_workers: 8
+
+model:
+  name: temporal_tcn
+  frame_dim: 32
+  hidden_dim: 64
+  num_layers: 2
+  dropout: 0.3
+
+loss: {}
+
+optimizer:
+  lr: 0.001
+  weight_decay: 0.01
+
+evaluation:
+  horizons_days: [14, 30, 60, 365]
+  threshold: 0.5
+  operational:
+    alpha: {Clear Cut: 0.50, Thinning: 0.50, Salvage: 0.85, Wildfire: 0.90, Wind: 0.60, Biotic: 0.80}
+    threshold: {Clear Cut: 15.0, Thinning: 15.0, Salvage: 5.0, Wildfire: 5.0, Wind: 10.0, Biotic: 10.0}
+    rest_period_days: 365
+    binary_alpha: 0.75
+    binary_threshold: 15.0
+    t_before_days: 14
+    start_offset_years: 1
