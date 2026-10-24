@@ -53,3 +53,11 @@ optimizer:
 evaluation:
   horizons_days: [14, 30, 60, 365]
   threshold: 0.5
+  operational:
+    alpha: {Clear Cut: 0.50, Thinning: 0.50, Salvage: 0.85, Wildfire: 0.90, Wind: 0.60, Biotic: 0.80}
+    threshold: {Clear Cut: 15.0, Thinning: 15.0, Salvage: 5.0, Wildfire: 5.0, Wind: 10.0, Biotic: 10.0}
+    rest_period_days: 365
+    binary_alpha: 0.75
+    binary_threshold: 15.0
+    t_before_days: 14
+    start_offset_years: 1
