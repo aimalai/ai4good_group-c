@@ -1,68 +1,80 @@
-"""Gated Residual Temporal Convolutional Network (GR-TCN) with SE Blocks."""
+"""Gated Residual Temporal Convolutional Network (GR-TCN) with Attention Pooling."""
 
 import torch
 from torch import nn
 from forest_disturbance.data.constants import S2_BANDS
 from forest_disturbance.models.layers import MLP
 
-class SqueezeExcitation1d(nn.Module):
-    def __init__(self, channels: int, reduction: int = 4):
+
+class AttentionPooling1d(nn.Module):
+    """Learns a dynamic weighted average over the temporal sequence, ignoring clouds."""
+    def __init__(self, channels: int):
         super().__init__()
-        self.fc1 = nn.Linear(channels, channels // reduction)
-        self.fc2 = nn.Linear(channels // reduction, channels)
-        
+        self.attention = nn.Sequential(
+            nn.Linear(channels, channels // 2),
+            nn.Tanh(),
+            nn.Linear(channels // 2, 1)
+        )
+
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        # Masked Global Average Pooling for SE
-        mask_float = mask.float()
-        valid_counts = mask_float.sum(dim=2, keepdim=True).clamp(min=1.0)
-        avg_pool = (x * mask_float).sum(dim=2) / valid_counts.squeeze(2)
+        # x shape: [B, C, T] -> transpose to [B, T, C] for linear layers
+        x_t = x.transpose(1, 2)
         
-        weights = torch.sigmoid(self.fc2(torch.relu(self.fc1(avg_pool))))
-        return x * weights.unsqueeze(2)
+        # Calculate unnormalized attention scores
+        attn_scores = self.attention(x_t) # [B, T, 1]
+        
+        # Apply strict cloud/padding mask before softmax
+        mask_bool = mask.transpose(1, 2).bool()
+        attn_scores = attn_scores.masked_fill(~mask_bool, -1e9)
+        
+        # Normalize weights
+        attn_weights = torch.softmax(attn_scores, dim=1)
+        
+        # Handle entirely cloudy sequences (NaN prevention)
+        attn_weights = attn_weights.masked_fill(torch.isnan(attn_weights), 0.0)
+        
+        # Calculate the weighted temporal average
+        # Batch matrix multiply: [B, C, T] x [B, T, 1] -> [B, C, 1]
+        pooled = torch.bmm(x, attn_weights)
+        return pooled.squeeze(-1)
+
 
 class GatedResidualBlock(nn.Module):
     def __init__(self, channels: int, dilation: int, dropout: float):
         super().__init__()
-        # GLU requires doubling the output channels of the convolution
         self.conv = nn.Conv1d(channels, channels * 2, kernel_size=3, padding=dilation, dilation=dilation)
         self.norm = nn.LayerNorm(channels)
-        self.se = SqueezeExcitation1d(channels)
         self.dropout = nn.Dropout(dropout)
         
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         residual = x
-        
-        # Apply padding mask before convolution to prevent noise bleeding
         x_masked = x * mask.float()
         
         out = self.conv(x_masked)
         
-        # GLU Activation (Split channels in half: compute * gate)
+        # Gated Linear Unit activation
         out, gate = out.chunk(2, dim=1)
         out = out * torch.sigmoid(gate)
         
-        # Channel-wise feature recalibration
-        out = self.se(out, mask)
-        
-        # Sequence-first for LayerNorm
         out = self.norm(out.transpose(1, 2)).transpose(1, 2)
         out = self.dropout(out)
         
-        # Re-apply strict mask after transformations
-        out = (out + residual) * mask.float()
-        return out
+        return (out + residual) * mask.float()
+
 
 class TemporalTCNModel(nn.Module):
     def __init__(
         self,
         num_classes: int,
-        frame_dim: int = 64,
-        hidden_dim: int = 128,
-        num_layers: int = 3,
+        frame_dim: int = 32,
+        hidden_dim: int = 64,
+        num_layers: int = 2,
         dropout: float = 0.3,
+        temperature: float = 0.5,
         **kwargs,
     ) -> None:
         super().__init__()
+        self.temperature = temperature
         
         self.s2_proj = MLP(len(S2_BANDS) + 3, [], hidden_dim, dropout)
         self.s1_proj = MLP(2, [], hidden_dim, dropout)
@@ -77,11 +89,12 @@ class TemporalTCNModel(nn.Module):
             for i in range(num_layers)
         ])
         
-        # Fusion dim: S2 (Rec_Max, Rec_Mean, Yr_Max, Yr_Mean, Diff_Max, Diff_Mean) + S1 equivalents
-        # Plus absolute diffs. Masked max+mean doubles the pooled output size.
-        feature_dim = (hidden_dim * 2 * 4) + (hidden_dim * 2 * 4)
+        self.pooler = AttentionPooling1d(hidden_dim)
         
-        self.trunk = MLP(feature_dim, [256, 128], 64, dropout)
+        # Fusion dim: S2 (Rec, Yr, Diff, Abs) + S1 equivalents
+        feature_dim = (hidden_dim * 4) + (hidden_dim * 4)
+        
+        self.trunk = MLP(feature_dim, [128], 64, dropout)
         self.class_head = nn.Linear(64, num_classes)
 
     def forward(self, batch: dict) -> torch.Tensor:
@@ -104,8 +117,8 @@ class TemporalTCNModel(nn.Module):
         combined = torch.cat((s2_features, s1_features), dim=-1)
         logits = self.class_head(self.trunk(combined))
         
-        # Retain raw logits for operational CUSUM filter tracking
-        return logits
+        # Scaled Logits forcing operational confidence
+        return logits / self.temperature
 
     def _merge_yearly(self, yearly_list: list) -> dict | None:
         if not yearly_list:
@@ -118,7 +131,7 @@ class TemporalTCNModel(nn.Module):
     def encode_series(self, series: dict | None, proj: nn.Module, blocks: nn.ModuleList, is_s2: bool) -> torch.Tensor:
         if not series or series["values"].shape[1] == 0:
             device = next(self.parameters()).device
-            return torch.zeros(1, proj.layers[-1].out_features * 2, device=device)
+            return torch.zeros(1, proj.layers[-1].out_features, device=device)
 
         vals = series["values"]
         mask = series["mask"].unsqueeze(1) # [B, 1, T]
@@ -138,26 +151,8 @@ class TemporalTCNModel(nn.Module):
         for block in blocks:
             x = block(x, mask)
             
-        return self._masked_dual_pooling(x, mask)
-
-    def _masked_dual_pooling(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        mask_bool = mask.bool()
-        
-        # Max Pooling (ignores clouds)
-        x_max = x.masked_fill(~mask_bool, -1e9)
-        pooled_max = x_max.max(dim=2)[0]
-        
-        # Mean Pooling (ignores clouds)
-        x_zero = x.masked_fill(~mask_bool, 0.0)
-        valid_counts = mask_bool.sum(dim=2).clamp(min=1)
-        pooled_mean = x_zero.sum(dim=2) / valid_counts
-        
-        # Handle 100% cloudy sequences safely
-        all_masked = ~mask_bool.any(dim=2)
-        pooled_max = pooled_max.masked_fill(all_masked, 0.0)
-        pooled_mean = pooled_mean.masked_fill(all_masked, 0.0)
-        
-        return torch.cat([pooled_max, pooled_mean], dim=-1)
+        # Dynamic Attention-Weighted Smoothing
+        return self.pooler(x, mask)
 
 def spectral_indices(pixels: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     band = {name: pixels[..., i] for i, name in enumerate(S2_BANDS)}
