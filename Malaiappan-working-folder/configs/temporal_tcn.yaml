@@ -2,7 +2,7 @@ defaults:
   - _self_
 
 output_root: runs
-run_name: temporal_tcn_pixel_cache
+run_name: temporal_gr_tcn_enterprise
 seed: 42
 
 trainer:
@@ -39,16 +39,16 @@ data:
 
 model:
   name: temporal_tcn
-  frame_dim: 32
-  hidden_dim: 64
-  num_layers: 2
-  dropout: 0.1
+  frame_dim: 64
+  hidden_dim: 128
+  num_layers: 3
+  dropout: 0.3
 
 loss: {}
 
 optimizer:
-  lr: 0.001
-  weight_decay: 0.0001
+  lr: 0.0003
+  weight_decay: 0.01
 
 evaluation:
   horizons_days: [14, 30, 60, 365]
