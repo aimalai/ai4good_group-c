@@ -2,7 +2,7 @@ defaults:
   - _self_
 
 output_root: runs
-run_name: temporal_gr_tcn_attention_pooled
+run_name: temporal_gr_tcn_hierarchical
 seed: 42
 
 trainer:
@@ -39,11 +39,10 @@ data:
 
 model:
   name: temporal_tcn
-  frame_dim: 32       # Halved for parametric bottleneck
-  hidden_dim: 64      # Halved for parametric bottleneck
-  num_layers: 2       # Reduced to prevent sequence overfitting
+  frame_dim: 32       
+  hidden_dim: 64      
+  num_layers: 2       
   dropout: 0.3
-  temperature: 0.5    # Algorithmic logit forcing scalar
 
 loss: {}
 

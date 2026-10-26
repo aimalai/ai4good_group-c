@@ -1,4 +1,4 @@
-"""Gated Residual Temporal Convolutional Network (GR-TCN) with Attention Pooling."""
+"""Gated Residual Temporal Convolutional Network (GR-TCN) with Hierarchical Heads."""
 
 import torch
 from torch import nn
@@ -7,7 +7,6 @@ from forest_disturbance.models.layers import MLP
 
 
 class AttentionPooling1d(nn.Module):
-    """Learns a dynamic weighted average over the temporal sequence, ignoring clouds."""
     def __init__(self, channels: int):
         super().__init__()
         self.attention = nn.Sequential(
@@ -17,24 +16,15 @@ class AttentionPooling1d(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        # x shape: [B, C, T] -> transpose to [B, T, C] for linear layers
         x_t = x.transpose(1, 2)
+        attn_scores = self.attention(x_t) 
         
-        # Calculate unnormalized attention scores
-        attn_scores = self.attention(x_t) # [B, T, 1]
-        
-        # Apply strict cloud/padding mask before softmax
         mask_bool = mask.transpose(1, 2).bool()
         attn_scores = attn_scores.masked_fill(~mask_bool, -1e9)
         
-        # Normalize weights
         attn_weights = torch.softmax(attn_scores, dim=1)
-        
-        # Handle entirely cloudy sequences (NaN prevention)
         attn_weights = attn_weights.masked_fill(torch.isnan(attn_weights), 0.0)
         
-        # Calculate the weighted temporal average
-        # Batch matrix multiply: [B, C, T] x [B, T, 1] -> [B, C, 1]
         pooled = torch.bmm(x, attn_weights)
         return pooled.squeeze(-1)
 
@@ -52,7 +42,6 @@ class GatedResidualBlock(nn.Module):
         
         out = self.conv(x_masked)
         
-        # Gated Linear Unit activation
         out, gate = out.chunk(2, dim=1)
         out = out * torch.sigmoid(gate)
         
@@ -70,14 +59,13 @@ class TemporalTCNModel(nn.Module):
         hidden_dim: int = 64,
         num_layers: int = 2,
         dropout: float = 0.3,
-        temperature: float = 0.5,
         **kwargs,
     ) -> None:
         super().__init__()
-        self.temperature = temperature
         
-        self.s2_proj = MLP(len(S2_BANDS) + 3, [], hidden_dim, dropout)
-        self.s1_proj = MLP(2, [], hidden_dim, dropout)
+        # Explicit Quality Features: S2 (12 bands + 3 indices + 1 mask = 16), S1 (2 bands + 1 mask = 3)
+        self.s2_proj = MLP(len(S2_BANDS) + 4, [], hidden_dim, dropout)
+        self.s1_proj = MLP(3, [], hidden_dim, dropout)
         
         self.s2_blocks = nn.ModuleList([
             GatedResidualBlock(hidden_dim, dilation=2**i, dropout=dropout) 
@@ -91,11 +79,13 @@ class TemporalTCNModel(nn.Module):
         
         self.pooler = AttentionPooling1d(hidden_dim)
         
-        # Fusion dim: S2 (Rec, Yr, Diff, Abs) + S1 equivalents
         feature_dim = (hidden_dim * 4) + (hidden_dim * 4)
         
         self.trunk = MLP(feature_dim, [128], 64, dropout)
-        self.class_head = nn.Linear(64, num_classes)
+        
+        # Hierarchical Heads
+        self.binary_head = nn.Linear(64, 1)                  # b: Is there a disturbance?
+        self.attr_head = nn.Linear(64, num_classes - 1)      # a_i: Which disturbance is it?
 
     def forward(self, batch: dict) -> torch.Tensor:
         s2 = batch["inputs"]["s2"]
@@ -115,10 +105,17 @@ class TemporalTCNModel(nn.Module):
             s1_features = torch.zeros_like(s2_features)
             
         combined = torch.cat((s2_features, s1_features), dim=-1)
-        logits = self.class_head(self.trunk(combined))
+        trunk_out = self.trunk(combined)
         
-        # Scaled Logits forcing operational confidence
-        return logits / self.temperature
+        # Hierarchical Logit Generation
+        b_logits = self.binary_head(trunk_out)    # [B, 1]
+        a_logits = self.attr_head(trunk_out)      # [B, 6]
+        
+        no_dist_logit = -b_logits
+        dist_logits = b_logits + a_logits
+        
+        # Output strictly conforms to CrossEntropyLoss [B, 7] format
+        return torch.cat([no_dist_logit, dist_logits], dim=-1)
 
     def _merge_yearly(self, yearly_list: list) -> dict | None:
         if not yearly_list:
@@ -134,25 +131,26 @@ class TemporalTCNModel(nn.Module):
             return torch.zeros(1, proj.layers[-1].out_features, device=device)
 
         vals = series["values"]
-        mask = series["mask"].unsqueeze(1) # [B, 1, T]
+        mask_seq = series["mask"]
+        conv_mask = mask_seq.unsqueeze(1) # [B, 1, T] for convolutional masking
+        feature_mask = mask_seq.unsqueeze(-1).float() # [B, T, 1] for direct frame feature input
+        
         h, w = vals.shape[-2:]
         pixels = vals[:, :, :, h // 2, w // 2]
         
         if is_s2:
-            frames = torch.cat((pixels, spectral_indices(pixels)), dim=-1)
+            frames = torch.cat((pixels, spectral_indices(pixels), feature_mask), dim=-1)
         else:
-            frames = pixels
+            frames = torch.cat((pixels, feature_mask), dim=-1)
             
         frames = torch.nan_to_num(frames, nan=0.0, posinf=0.0, neginf=0.0)
         
-        # Embed and transpose for Conv1d [B, C, T]
         x = proj(frames).transpose(1, 2)
         
         for block in blocks:
-            x = block(x, mask)
+            x = block(x, conv_mask)
             
-        # Dynamic Attention-Weighted Smoothing
-        return self.pooler(x, mask)
+        return self.pooler(x, conv_mask)
 
 def spectral_indices(pixels: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     band = {name: pixels[..., i] for i, name in enumerate(S2_BANDS)}
