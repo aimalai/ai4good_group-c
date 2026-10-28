@@ -23,3 +23,13 @@ experiments/tristan_baseline_10ep/*.log
 
 # Dual L-TAE local training log
 experiments/tristan_ltae_late_fusion/*.log
+
+# NASA FIRMS local data/logs
+experiments/tristan_firms_fusion/firms_cache/
+experiments/tristan_firms_fusion/*.log
+
+# Gated L-TAE local logs
+experiments/tristan_gated_ltae_fusion/*.log
+
+# Fold-1 local training log
+experiments/tristan_fold1_replication/*.log
