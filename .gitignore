@@ -33,3 +33,6 @@ experiments/tristan_gated_ltae_fusion/*.log
 
 # Fold-1 local training log
 experiments/tristan_fold1_replication/*.log
+
+# Fold-2 local training log
+experiments/tristan_fold2_replication/*.log
