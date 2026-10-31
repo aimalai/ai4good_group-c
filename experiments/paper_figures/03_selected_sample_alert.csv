@@ -1,0 +1,2 @@
+sample_id,date,predicted_class,matched_event_id,true_class,lag_days
+28,2021-09-25,Wildfire,28:1,Wildfire,0
