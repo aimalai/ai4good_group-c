@@ -17,3 +17,13 @@ data/
 *.zarr/
 *.parquet
 *.png
+.ipynb_checkpoints/
+__pycache__/
+*.pt
+*.pth
+*.parquet
+*.zarr
+*.h5
+outputs/
+logs/
+.cache/
